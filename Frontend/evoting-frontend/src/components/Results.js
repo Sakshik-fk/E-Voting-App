@@ -1,6 +1,8 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import axios from "../api/axiosConfig";
+import LogoutButton from "./LogoutButton";
+import Confetti from "react-confetti";
 import {
   BarChart,
   Bar,
@@ -10,28 +12,22 @@ import {
   ResponsiveContainer,
   Cell,
 } from "recharts";
-import LogoutButton from "./LogoutButton";
-import Confetti from "react-confetti";
 
 function Results() {
   const { electionId } = useParams();
   const navigate = useNavigate();
-
   const token = localStorage.getItem("token");
   const role = localStorage.getItem("role");
   const userId = localStorage.getItem("userId");
 
-  const [data, setData] = useState({
-    election: null,
-    candidates: [],
-    timeLeft: "",
-    hasVoted: false,
-  });
-
+  const [election, setElection] = useState(null);
+  const [candidates, setCandidates] = useState([]);
+  const [timeLeft, setTimeLeft] = useState("");
+  const [hasVoted, setHasVoted] = useState(false);
   const [showConfetti, setShowConfetti] = useState(false);
+
   const confettiPlayed = useRef(false);
 
-  // ⏱ Countdown
   const calculateTimeLeft = useCallback((endTime) => {
     const diff = new Date(endTime) - new Date();
     if (diff <= 0) return null;
@@ -41,51 +37,38 @@ function Results() {
     return `${hrs}:${mins}:${secs}`;
   }, []);
 
-  const fetchAll = useCallback(async () => {
+  const fetchResults = useCallback(async () => {
     try {
-      // Fetch election + candidates together
-      const [electionRes, candidatesRes] = await Promise.all([
-        axios.get(`/election/one/${electionId}`, {
-          headers: { Authorization: `Bearer ${token}` },
-        }),
-        axios.get(`/election/results/${electionId}`, {
-          headers: { Authorization: `Bearer ${token}` },
-        }),
-      ]);
-
-      const electionData = electionRes.data;
-      const candidatesData = candidatesRes.data;
-
-      // Check if voter has voted
-      const voted = role === "voter" && electionData.voters.includes(userId);
-
-      // Timer
-      let tl = "";
-      if (electionData.isActive && electionData.endTime) {
-        tl = calculateTimeLeft(electionData.endTime);
-      }
-
-      // Auto-close if time passed
-      if (electionData.isActive && electionData.endTime && !tl) {
-        await axios.put(
-          `/election/close/${electionId}`,
-          {},
-          { headers: { Authorization: `Bearer ${token}` } }
-        );
-        electionData.isActive = false;
-        tl = null;
-      }
-
-      setData({
-        election: electionData,
-        candidates: candidatesData,
-        timeLeft: tl,
-        hasVoted: voted,
+      const electionRes = await axios.get(`/election/one/${electionId}`, {
+        headers: { Authorization: `Bearer ${token}` },
       });
+      const electionData = electionRes.data;
+      setElection(electionData);
+      if (role === "voter") setHasVoted(electionData.voters.includes(userId));
 
-      // Confetti for final winner
-      if (!electionData.isActive && !confettiPlayed.current && candidatesData.length) {
-        const maxVotes = Math.max(...candidatesData.map(c => c.votes));
+      if (electionData.isActive && electionData.endTime) {
+        const tl = calculateTimeLeft(electionData.endTime);
+        setTimeLeft(tl);
+        if (!tl) {
+          await axios.put(
+            `/election/close/${electionId}`,
+            {},
+            { headers: { Authorization: `Bearer ${token}` } }
+          );
+          electionData.isActive = false;
+          setElection({ ...electionData });
+        }
+      } else {
+        setTimeLeft(null);
+      }
+
+      const candidatesRes = await axios.get(`/election/results/${electionId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setCandidates(candidatesRes.data);
+
+      if (!electionData.isActive && !confettiPlayed.current && candidatesRes.data.length > 0) {
+        const maxVotes = Math.max(...candidatesRes.data.map((c) => c.votes), 0);
         if (maxVotes > 0) {
           setShowConfetti(true);
           confettiPlayed.current = true;
@@ -95,101 +78,118 @@ function Results() {
     } catch (err) {
       console.error("Failed to load results", err);
     }
-  }, [electionId, token, userId, role, calculateTimeLeft]);
+  }, [electionId, token, role, userId, calculateTimeLeft]);
 
   useEffect(() => {
-    fetchAll();
-    const interval = setInterval(fetchAll, 3000);
+    fetchResults();
+    const interval = setInterval(fetchResults, 3000);
     return () => clearInterval(interval);
-  }, [fetchAll]);
+  }, [fetchResults]);
 
-  if (!data.election) return <p>Loading...</p>;
+  if (!election) return <p>Loading...</p>;
 
-  const { election, candidates, timeLeft, hasVoted } = data;
-  const maxVotes = Math.max(...candidates.map(c => c.votes), 0);
-  const leaders = candidates.filter(c => c.votes === maxVotes && maxVotes > 0);
-  const votingClosed = !election.isActive;
+  const maxVotes = Math.max(...candidates.map((c) => c.votes), 0);
+  const leaders = candidates.filter((c) => c.votes === maxVotes && maxVotes > 0);
+
+  // Hover handler for all buttons
+  const handleHover = (e, hover) => {
+    if (hover) {
+      e.currentTarget.style.transform = "scale(1.05)";
+      e.currentTarget.style.boxShadow = "0px 4px 12px rgba(0,0,0,0.2)";
+    } else {
+      e.currentTarget.style.transform = "scale(1)";
+      e.currentTarget.style.boxShadow = "none";
+    }
+  };
 
   return (
     <div style={styles.container}>
       {showConfetti && <Confetti recycle={false} />}
-      <LogoutButton />
+      <div style={styles.header}>
+        <h2>{election.title}</h2>
+        <LogoutButton />
+      </div>
+      <p style={styles.description}>{election.description}</p>
 
-      <h2>{election.title}</h2>
-      <p>{election.description}</p>
+      <div style={styles.status}>
+        {election.isActive ? (
+          <span style={styles.active}>🟢 Voting Live</span>
+        ) : (
+          <span style={styles.closed}>🔴 Voting has ended</span>
+        )}
+        {election.isActive && timeLeft && (
+          <span style={styles.timer}>⏱ Ends in: {timeLeft}</span>
+        )}
+      </div>
 
-      <p style={{ fontWeight: "bold", color: election.isActive ? "green" : "red" }}>
-        {election.isActive ? "🟢 Voting Live" : "🔴 Voting has ended"}
-      </p>
+      <button
+        style={styles.backBtn}
+        onMouseEnter={(e) => handleHover(e, true)}
+        onMouseLeave={(e) => handleHover(e, false)}
+        onClick={() => navigate("/elections")}
+      >
+        ⬅ Back
+      </button>
 
-      {/* ⏱ TIMER */}
-      {election.isActive && timeLeft && (
-        <p style={styles.timer}>⏱ Voting ends in: {timeLeft}</p>
+      <h3 style={{ marginTop: "20px" }}>📊 Candidate Votes</h3>
+      <div style={styles.candidatesContainer}>
+        {candidates.map((c) => (
+          <div
+            key={c._id}
+            style={{
+              ...styles.candidateCard,
+              border: c.votes === maxVotes ? "2px solid #16a34a" : "1px solid #ccc",
+            }}
+          >
+            <p style={styles.candidateName}>{c.name}</p>
+            <p style={styles.candidateVotes}>{c.votes} votes</p>
+          </div>
+        ))}
+      </div>
+
+      {!election.isActive && leaders.length > 0 && (
+        <>
+          <h3 style={{ marginTop: "30px" }}>🏁 Final Winner</h3>
+          <div style={styles.leadersContainer}>
+            {leaders.map((c) => (
+              <div key={c._id} style={styles.winnerCard}>
+                <strong>{c.name}</strong> — {c.votes} votes
+              </div>
+            ))}
+          </div>
+        </>
       )}
-      {election.isActive && !timeLeft && (
-        <p style={styles.timer}>🛑 Voting period has ended</p>
+
+      {role === "voter" && (
+        <button
+          style={{
+            ...styles.voteBtn,
+            opacity: hasVoted || !election.isActive ? 0.5 : 1,
+          }}
+          onMouseEnter={(e) => handleHover(e, true)}
+          onMouseLeave={(e) => handleHover(e, false)}
+          onClick={() => navigate(`/candidates/${election._id}`)}
+          disabled={hasVoted || !election.isActive}
+        >
+          🗳 Vote Now
+        </button>
       )}
 
-      {/* 📊 LIVE BAR CHART */}
+      {/* LIVE BAR CHART */}
       {candidates.length > 0 && (
-        <ResponsiveContainer width="100%" height={400}>
+        <ResponsiveContainer width="100%" height={300}>
           <BarChart data={candidates}>
             <XAxis dataKey="name" />
             <YAxis allowDecimals={false} />
             <Tooltip />
             <Bar dataKey="votes" isAnimationActive>
               {candidates.map((c, i) => (
-                <Cell
-                  key={i}
-                  fill={c.votes === maxVotes ? "#16a34a" : "#6366f1"}
-                />
+                <Cell key={i} fill={c.votes === maxVotes ? "#16a34a" : "#6366f1"} />
               ))}
             </Bar>
           </BarChart>
         </ResponsiveContainer>
       )}
-
-      {/* 🏆 LIVE LEADER */}
-      {election.isActive && leaders.length > 0 && (
-        <>
-          <h3>🏆 Currently Winning</h3>
-          {leaders.map((c) => (
-            <p key={c._id}>
-              <strong>{c.name}</strong> — {c.votes} votes
-            </p>
-          ))}
-        </>
-      )}
-
-      {/* 🏁 FINAL WINNER */}
-      {!election.isActive && leaders.length > 0 && (
-        <>
-          <h3>🏁 Final Winner</h3>
-          {leaders.map((c) => (
-            <p key={c._id}>
-              <strong>{c.name}</strong> — {c.votes} votes
-            </p>
-          ))}
-        </>
-      )}
-
-      {/* 🗳 VOTE BUTTON */}
-      {role === "voter" && (
-        <button
-          style={{
-            ...styles.voteBtn,
-            opacity: hasVoted || votingClosed ? 0.5 : 1,
-          }}
-          onClick={() => navigate(`/candidates/${election._id}`)}
-          disabled={hasVoted || votingClosed}
-        >
-          🗳 Vote Now
-        </button>
-      )}
-
-      <button style={styles.backBtn} onClick={() => navigate("/elections")}>
-        ⬅ Back
-      </button>
     </div>
   );
 }
@@ -198,12 +198,66 @@ const styles = {
   container: {
     padding: "30px",
     minHeight: "100vh",
-    backgroundColor: "#f5f6fa",
+    backgroundColor: "#f9fafb",
+    fontFamily: "Arial",
   },
-  timer: {
-    fontSize: "18px",
+  header: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  backBtn: {
+    marginTop: "15px",
+    padding: "10px 16px",
+    cursor: "pointer",
+    background: "linear-gradient(90deg, #4f46e5, #6366f1)", // Blue gradient
+    color: "white",
+    border: "none",
+    borderRadius: "8px",
     fontWeight: "bold",
-    color: "#dc2626",
+    transition: "transform 0.2s, box-shadow 0.2s",
+  },
+  description: {
+    fontSize: "16px",
+    marginTop: "5px",
+    color: "#555",
+  },
+  status: {
+    marginTop: "10px",
+    display: "flex",
+    gap: "20px",
+    alignItems: "center",
+  },
+  active: { color: "#16a34a", fontWeight: "bold" },
+  closed: { color: "#dc2626", fontWeight: "bold" },
+  timer: { fontWeight: "bold", color: "#f59e0b" },
+  candidatesContainer: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: "15px",
+    marginTop: "10px",
+  },
+  candidateCard: {
+    flex: "1 1 150px",
+    padding: "12px",
+    borderRadius: "8px",
+    backgroundColor: "#fff",
+    boxShadow: "0px 2px 6px rgba(0,0,0,0.1)",
+    textAlign: "center",
+  },
+  candidateName: { fontWeight: "bold", marginBottom: "5px" },
+  candidateVotes: { fontSize: "14px", color: "#333" },
+  leadersContainer: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: "10px",
+  },
+  winnerCard: {
+    padding: "10px",
+    borderRadius: "6px",
+    backgroundColor: "#ecfdf5",
+    border: "2px solid #16a34a",
+    fontWeight: "bold",
   },
   voteBtn: {
     marginTop: "20px",
@@ -211,13 +265,9 @@ const styles = {
     backgroundColor: "#6366f1",
     color: "white",
     border: "none",
-    borderRadius: "4px",
+    borderRadius: "6px",
     cursor: "pointer",
-  },
-  backBtn: {
-    marginTop: "30px",
-    padding: "8px 14px",
-    cursor: "pointer",
+    transition: "transform 0.2s, box-shadow 0.2s",
   },
 };
 
